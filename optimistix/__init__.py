@@ -47,6 +47,7 @@ from ._solver import (
     BestSoFarRootFinder as BestSoFarRootFinder,
     BFGS as BFGS,
     Bisection as Bisection,
+    Broyden as Broyden,
     Chord as Chord,
     ClassicalTrustRegion as ClassicalTrustRegion,
     dai_yuan as dai_yuan,

@@ -7,6 +7,7 @@ import jax.lax as lax
 import jax.numpy as jnp
 import jax.tree_util as jtu
 import lineax as lx
+from jax.flatten_util import ravel_pytree
 
 
 if TYPE_CHECKING:
@@ -39,7 +40,8 @@ def _converged(factor: Scalar, tol: float) -> Bool[Array, " "]:
 
 class _NewtonChordState(eqx.Module, Generic[Y], strict=True):
     f: PyTree[Array]
-    linear_state: Optional[tuple[lx.AbstractLinearOperator, PyTree]]
+    chord_linear_state: Optional[tuple[lx.AbstractLinearOperator, PyTree]]
+    broyden_linear_state: Optional[tuple[PyTree, lx.AbstractLinearOperator, PyTree]]
     diff: Y
     diffsize: Scalar
     diffsize_prev: Scalar
@@ -67,6 +69,7 @@ class _AbstractNewtonChord(
     cauchy_termination: bool = True
 
     _is_newton: AbstractClassVar[bool]
+    _is_broyden: AbstractClassVar[bool]
 
     def init(
         self,
@@ -80,20 +83,33 @@ class _AbstractNewtonChord(
     ) -> _NewtonChordState[Y]:
         del options, aux_struct
         if self._is_newton:
-            linear_state = None
-        else:
+            chord_linear_state = None
+            broyden_linear_state = None
+        elif not self._is_broyden:
             jac = lx.JacobianLinearOperator(_NoAux(fn), y, args, tags=tags)
             jac = lx.linearise(jac)
             init_later_state = self.linear_solver.init(jac, options={})
             init_later_state = lax.stop_gradient(init_later_state)
-            linear_state = (jac, init_later_state)
+            chord_linear_state = (jac, init_later_state)
+            broyden_linear_state = None
+        elif self._is_broyden:
+            jac = lx.JacobianLinearOperator(_NoAux(fn), y, args, tags=tags)
+            jac = lx.linearise(jac)
+            init_later_state = self.linear_solver.init(jac, options={})
+            init_later_state = lax.stop_gradient(init_later_state)
+            fx, _ = fn(y, args)
+            broyden_linear_state = (fx, jac, init_later_state)
+            chord_linear_state = None
+        else:
+            raise ValueError("Invalid Solver Params")
         if self.cauchy_termination:
             f_val = tree_full_like(f_struct, jnp.inf)
         else:
             f_val = None
         return _NewtonChordState(
             f=f_val,
-            linear_state=linear_state,
+            chord_linear_state=chord_linear_state,
+            broyden_linear_state=broyden_linear_state,
             diff=tree_full_like(y, jnp.inf),
             diffsize=jnp.array(jnp.inf),
             diffsize_prev=jnp.array(1.0),
@@ -119,13 +135,22 @@ class _AbstractNewtonChord(
                 lin_fn, jax.eval_shape(lambda: y), tags=tags
             )
             sol = lx.linear_solve(jac, fx, self.linear_solver, throw=False)
-        else:
+        elif not self._is_broyden:
             fx, aux = fn(y, args)
-            jac, linear_state = state.linear_state  # pyright: ignore
+            jac, linear_state = state.chord_linear_state  # pyright: ignore
             linear_state = lax.stop_gradient(linear_state)
             sol = lx.linear_solve(
                 jac, fx, self.linear_solver, state=linear_state, throw=False
             )
+        elif self._is_broyden:
+            fx, aux = fn(y, args)
+            _, jac, linear_state = state.broyden_linear_state  # pyright: ignore
+            linear_state = lax.stop_gradient(linear_state)
+            sol = lx.linear_solve(
+                jac, fx, self.linear_solver, state=linear_state, throw=False
+            )
+        else:
+            raise ValueError("Invalid Solver Params")
         diff = sol.value
         new_y = (y**ω - diff**ω).ω
         if lower is not None:
@@ -134,6 +159,17 @@ class _AbstractNewtonChord(
             new_y = jtu.tree_map(lambda a, b: jnp.clip(a, max=b), new_y, upper)
         if lower is not None or upper is not None:
             diff = (y**ω - new_y**ω).ω
+
+        broyden_linear_state = state.broyden_linear_state
+        if self._is_broyden:
+            fx_old, jac_old, linear_state = broyden_linear_state  # pyright: ignore
+            delta_fx = (fx**ω - fx_old**ω).ω
+            norm = jnp.linalg.norm(ravel_pytree(diff)[0])
+            top = (delta_fx**ω - jac_old.mv(diff) ** ω).ω
+            print("fx", fx, "y", y, "top", top, "diff", diff, jac_old)
+            jac = jac_old + jtu.tree_map(lambda a, b: (a / norm) @ b.T, top, diff)
+            broyden_linear_state = (fx, jac, linear_state)
+
         scale = (self.atol + self.rtol * ω(new_y).call(jnp.abs)).ω
         with jax.numpy_dtype_promotion("standard"):
             diffsize = self.norm((diff**ω / scale**ω).ω)
@@ -143,7 +179,8 @@ class _AbstractNewtonChord(
             f_val = None
         new_state = _NewtonChordState(
             f=f_val,
-            linear_state=state.linear_state,
+            chord_linear_state=state.chord_linear_state,
+            broyden_linear_state=broyden_linear_state,
             diff=diff,
             diffsize=diffsize,
             diffsize_prev=state.diffsize,
@@ -227,6 +264,7 @@ class Newton(_AbstractNewtonChord[Y, Out, Aux], strict=True):
     """
 
     _is_newton = True
+    _is_broyden = False
 
 
 class Chord(_AbstractNewtonChord[Y, Out, Aux], strict=True):
@@ -250,6 +288,12 @@ class Chord(_AbstractNewtonChord[Y, Out, Aux], strict=True):
     """
 
     _is_newton = False
+    _is_broyden = False
+
+
+class Broyden(_AbstractNewtonChord[Y, Out, Aux], strict=True):
+    _is_newton = False
+    _is_broyden = True
 
 
 _init_doc = """**Arguments:**

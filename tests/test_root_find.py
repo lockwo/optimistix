@@ -18,6 +18,7 @@ from .helpers import (
 
 atol = rtol = 1e-6
 _root_finders = (
+    optx.Broyden(rtol, atol),
     optx.Newton(rtol, atol),
     optx.Chord(rtol, atol),
 )
@@ -130,7 +131,12 @@ def test_bisection_flip():
 
 
 @pytest.mark.parametrize(
-    "solver", [optx.Newton(rtol=1e-5, atol=1e-5), optx.Chord(rtol=1e-5, atol=1e-5)]
+    "solver",
+    [
+        optx.Broyden(rtol=1e-5, atol=1e-5),
+        optx.Newton(rtol=1e-5, atol=1e-5),
+        optx.Chord(rtol=1e-5, atol=1e-5),
+    ],
 )
 def test_newton_bounded(solver):
     y0 = (jnp.array(0.0), jnp.arange(4.0).reshape(2, 2))
@@ -185,7 +191,7 @@ def test_bad_root_via_min():
     assert sol.result == optx.RESULTS.nonlinear_max_steps_reached
 
 
-@pytest.mark.parametrize("solver_cls", (optx.Newton, optx.Chord))
+@pytest.mark.parametrize("solver_cls", (optx.Broyden, optx.Newton, optx.Chord))
 def test_newton_chord_small_diff(solver_cls):
     def f(y, _):
         return y

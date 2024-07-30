@@ -27,7 +27,7 @@ from .levenberg_marquardt import (
     LevenbergMarquardt as LevenbergMarquardt,
 )
 from .nelder_mead import NelderMead as NelderMead
-from .newton_chord import Chord as Chord, Newton as Newton
+from .newton_chord import Broyden as Broyden, Chord as Chord, Newton as Newton
 from .nonlinear_cg import (
     dai_yuan as dai_yuan,
     fletcher_reeves as fletcher_reeves,
